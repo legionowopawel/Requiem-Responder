@@ -58,7 +58,7 @@ def webhook_smierc():
         wynik.get("nowy_etap", etap),
         len(wynik.get("reply_html", ""))
     )
-
+    wynik["reply_html"] += "<p><i>W razie dalszych pytań pisz śmiało.</i></p>"
     return jsonify(wynik), 200
 
 
