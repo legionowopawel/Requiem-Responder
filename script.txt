@@ -1,0 +1,261 @@
+/**
+ * GAS_smierc.js — Pośmiertny autoresponder Pawła
+ *
+ * Script Properties:
+ *   WEBHOOK_URL_SMIERC  — np. https://requiem-responder.onrender.com/webhook_smierc
+ *   SHEET_ID_SMIERC     — ID arkusza Google Sheets
+ *   KEYWORD_SMIERC      — słowo kluczowe np. "żyjesz"
+ *
+ * Struktura Sheets: jedna zakładka per osoba (nazwa = email ze znakami zastąpionymi _)
+ *   A: nr  B: data_smierci (tylko wiersz 2)  C: mail_od_osoby  D: odpowiedz_pawla
+ */
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function _prop(name) {
+  return PropertiesService.getScriptProperties().getProperty(name) || "";
+}
+
+// ── Zamień datę JS na tekst słowny po polsku ──────────────────────────────────
+function _dataSlownie(date) {
+  var dni = ["","pierwszego","drugiego","trzeciego","czwartego","piątego",
+    "szóstego","siódmego","ósmego","dziewiątego","dziesiątego",
+    "jedenastego","dwunastego","trzynastego","czternastego","piętnastego",
+    "szesnastego","siedemnastego","osiemnastego","dziewiętnastego","dwudziestego",
+    "dwudziestego pierwszego","dwudziestego drugiego","dwudziestego trzeciego",
+    "dwudziestego czwartego","dwudziestego piątego","dwudziestego szóstego",
+    "dwudziestego siódmego","dwudziestego ósmego","dwudziestego dziewiątego",
+    "trzydziestego","trzydziestego pierwszego"];
+  var miesiace = ["","stycznia","lutego","marca","kwietnia","maja","czerwca",
+    "lipca","sierpnia","września","października","listopada","grudnia"];
+  var lata = {
+    2024: "dwa tysiące dwudziestego czwartego",
+    2025: "dwa tysiące dwudziestego piątego",
+    2026: "dwa tysiące dwudziestego szóstego",
+    2027: "dwa tysiące dwudziestego siódmego",
+  };
+  var d   = date.getDate();
+  var m   = date.getMonth() + 1;
+  var y   = date.getFullYear();
+  var rok = lata[y] || String(y);
+  return dni[d] + " " + miesiace[m] + " " + rok + " roku";
+}
+
+// ── Oblicz datę śmierci = dziś minus 7 dni ───────────────────────────────────
+function _obliczDateSmierci() {
+  var d = new Date();
+  d.setDate(d.getDate() - 7);
+  return d;
+}
+
+// ── Pobierz lub utwórz zakładkę dla danego emaila ────────────────────────────
+function _getOrCreateSheet(ss, email) {
+  var safeName = email.replace(/[@.]/g, "_").substring(0, 50);
+  var sheet = ss.getSheetByName(safeName);
+  if (!sheet) {
+    sheet = ss.insertSheet(safeName);
+    sheet.getRange(1, 1, 1, 4).setValues([["nr", "data_smierci", "mail_od_osoby", "odpowiedz_pawla"]]);
+    console.log("Utworzono zakładkę dla: " + email);
+  }
+  return sheet;
+}
+
+// ── Pobierz aktualny etap dla osoby ──────────────────────────────────────────
+// lastRow=1 (tylko nagłówek) → etap 1
+// lastRow=2 (nagłówek + 1 wymiana) → etap 2 itd.
+function _getEtap(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return 1;
+  return lastRow;  // lastRow-1 wierszy danych + 1 = następny etap
+}
+
+// ── Pobierz datę śmierci dla osoby (wiersz 2, kolumna B) ─────────────────────
+function _getDataSmierci(sheet) {
+  if (sheet.getLastRow() < 2) return null;
+  var val = sheet.getRange(2, 2).getValue();
+  return val ? val.toString() : null;
+}
+
+// ── Pobierz historię rozmów (max 3 ostatnie wymiany) ─────────────────────────
+function _getHistoria(sheet) {
+  var lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  var startRow = Math.max(2, lastRow - 2);
+  var numRows  = lastRow - startRow + 1;
+  var data     = sheet.getRange(startRow, 3, numRows, 2).getValues();
+
+  var historia = [];
+  for (var i = 0; i < data.length; i++) {
+    if (data[i][0] || data[i][1]) {
+      historia.push({
+        od:        (data[i][0] || "").toString().substring(0, 300),
+        odpowiedz: (data[i][1] || "").toString().substring(0, 300)
+      });
+    }
+  }
+  return historia;
+}
+
+// ── Zapisz wymianę do Sheets ──────────────────────────────────────────────────
+function _zapiszWymiane(sheet, nr, dataSmierciSlownie, mailOdOsoby, odpowiedz) {
+  // Datę śmierci zapisujemy tylko w wierszu 2 (pierwsza wymiana)
+  var dataDoZapisu = (sheet.getLastRow() <= 1) ? dataSmierciSlownie : "";
+  sheet.appendRow([nr, dataDoZapisu, mailOdOsoby, odpowiedz]);
+  console.log("Zapisano wymianę nr " + nr + " dla: " + sheet.getName());
+}
+
+// ── Czy email jest już na czarnej liście ──────────────────────────────────────
+function _czyNaCzarnejLiscie(ss, email) {
+  var safeName = email.replace(/[@.]/g, "_").substring(0, 50);
+  return ss.getSheetByName(safeName) !== null;
+}
+
+// ── Wywołaj backend Render ────────────────────────────────────────────────────
+function _callBackendSmierc(sender, body, etap, dataSmierci, historia) {
+  var url = _prop("WEBHOOK_URL_SMIERC");
+  if (!url) {
+    console.error("Brak WEBHOOK_URL_SMIERC!");
+    return null;
+  }
+
+  var payload = {
+    sender:       sender,
+    body:         body,
+    etap:         etap,
+    data_smierci: dataSmierci,
+    historia:     historia
+  };
+
+  var options = {
+    method:             "post",
+    contentType:        "application/json",
+    payload:            JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  try {
+    var resp = UrlFetchApp.fetch(url, options);
+    if (resp.getResponseCode() === 200) {
+      var json = JSON.parse(resp.getContentText());
+      console.log("webhook_smierc OK — nowy_etap=" + json.nowy_etap);
+      return json;
+    } else {
+      console.error("webhook_smierc błąd HTTP: " + resp.getResponseCode() +
+        " — " + resp.getContentText().substring(0, 200));
+      return null;
+    }
+  } catch(e) {
+    console.error("webhook_smierc wyjątek: " + e.message);
+    return null;
+  }
+}
+
+// ── Wyślij odpowiedź mailem ───────────────────────────────────────────────────
+function _wyslijOdpowiedz(msg, subject, htmlBody) {
+  try {
+    msg.reply("", {
+      htmlBody: htmlBody,
+      name:     "Autoresponder Pawła"
+    });
+    console.log("Wysłano odpowiedź pośmiertną");
+  } catch(e) {
+    console.warn("reply() nie działa, wysyłam nowy mail: " + e.message);
+    var match = msg.getFrom().match(/<([^>]+)>/);
+    var to    = match ? match[1] : msg.getFrom();
+    MailApp.sendEmail({
+      to:       to,
+      subject:  "RE: " + subject,
+      htmlBody: htmlBody,
+      name:     "Autoresponder Pawła"
+    });
+  }
+}
+
+// ── GŁÓWNA FUNKCJA — trigger co 10 minut ─────────────────────────────────────
+function processSmierc() {
+  var keyword = (_prop("KEYWORD_SMIERC") || "żyjesz").toLowerCase();
+  var sheetId = _prop("SHEET_ID_SMIERC");
+
+  if (!sheetId) {
+    console.error("Brak SHEET_ID_SMIERC!");
+    return;
+  }
+
+  var ss      = SpreadsheetApp.openById(sheetId);
+  var threads = GmailApp.getInboxThreads(0, 20);
+
+  for (var i = 0; i < threads.length; i++) {
+    var thread = threads[i];
+    if (!thread.isUnread()) continue;
+
+    var messages  = thread.getMessages();
+    var msg       = messages[messages.length - 1];
+    var fromRaw   = msg.getFrom();
+    var match     = fromRaw.match(/<([^>]+)>/);
+    var fromEmail = (match ? match[1] : fromRaw).toLowerCase();
+    var subject   = msg.getSubject();
+    var body      = msg.getPlainBody() || "";
+    var bodyLower = (body + " " + subject).toLowerCase();
+
+    var naCzarnejLiscie = _czyNaCzarnejLiscie(ss, fromEmail);
+    var maSlowo         = bodyLower.indexOf(keyword) !== -1;
+
+    // Ignoruj jeśli brak słowa kluczowego i nie na czarnej liście
+    if (!maSlowo && !naCzarnejLiscie) continue;
+
+    console.log("Przetwarzam: " + fromEmail +
+      " | czarna lista: " + naCzarnejLiscie +
+      " | słowo kluczowe: " + maSlowo);
+
+    var sheet = _getOrCreateSheet(ss, fromEmail);
+    var etap  = _getEtap(sheet);
+
+    // Data śmierci — pobierz z Sheets lub oblicz raz przy pierwszym mailu
+    var dataSmierciSlownie = _getDataSmierci(sheet);
+    if (!dataSmierciSlownie) {
+      dataSmierciSlownie = _dataSlownie(_obliczDateSmierci());
+      console.log("Nowa osoba: " + fromEmail + " | data śmierci: " + dataSmierciSlownie);
+    }
+
+    var historia = _getHistoria(sheet);
+
+    var wynik = _callBackendSmierc(
+      fromEmail,
+      body.substring(0, 1000),
+      etap,
+      dataSmierciSlownie,
+      historia
+    );
+
+    if (!wynik) {
+      console.error("Brak odpowiedzi z backendu dla: " + fromEmail);
+      thread.markRead();
+      continue;
+    }
+
+    var htmlOdpowiedz = wynik.reply_html || "<p>Chwilowy brak zasięgu w tej strefie kosmicznej.</p>";
+    var nowyEtap      = wynik.nowy_etap  || etap;
+
+    _wyslijOdpowiedz(msg, subject, htmlOdpowiedz);
+
+    var nr = sheet.getLastRow();
+    _zapiszWymiane(sheet, nr, dataSmierciSlownie,
+      body.substring(0, 500),
+      htmlOdpowiedz.substring(0, 500)
+    );
+
+    thread.markRead();
+    console.log("Zakończono: " + fromEmail + " | etap: " + etap + " → " + nowyEtap);
+  }
+}
+
+// ── Wybudź Render co 5 minut ──────────────────────────────────────────────────
+function keepAliveSmierc() {
+  var url = _prop("WEBHOOK_URL_SMIERC").replace("/webhook_smierc", "/");
+  try {
+    UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    console.log("keepAlive OK: " + url);
+  } catch(e) {
+    console.warn("keepAlive błąd: " + e.message);
+  }
+}
