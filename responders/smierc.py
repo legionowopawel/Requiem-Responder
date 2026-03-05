@@ -3,14 +3,11 @@ responders/smierc.py
 Pośmiertny autoresponder Pawła.
 
 Tryby:
-  ETAP 1-6  — narracja pozagrobowa z pozagrobowe.txt
-              + obrazek PNG z media/images/niebo/{etap}.png
-              + filmik MP4 z media/mp4/niebo/{etap}.mp4 (jeśli istnieje)
-  ETAP 7    — Paweł informuje o reinkarnacji
-              + obrazek PNG z media/images/niebo/7.png
-  ETAP 8+   — tryb WYSŁANNIK: odpowiedzi w stylu Księgi Urantii
-              + obrazek FLUX generowany na podstawie rzeczowników z wiadomości
-              + reklama nieba
+  ETAP 1-6  — narracja pozagrobowa + obrazek PNG + filmik MP4
+  ETAP 7    — reinkarnacja + obrazek PNG
+  ETAP 8+   — WYSŁANNIK: odpowiedź w stylu Księgi Urantii
+              + obrazek FLUX z rzeczownikami z wiadomości
+              + załącznik _.txt z pełnym promptem wysłanym do FLUX
 """
 
 import os
@@ -69,7 +66,7 @@ def _get_etap_image(etap: int):
     path = os.path.join(MEDIA_DIR, "images", "niebo", f"{etap}.png")
     b64  = _file_to_base64(path)
     if b64:
-        current_app.logger.info("Obrazek etapu %d OK (%s)", etap, path)
+        current_app.logger.info("Obrazek etapu %d OK", etap)
         return {"base64": b64, "content_type": "image/png", "filename": f"niebo_{etap}.png"}
     current_app.logger.warning("Brak obrazka etapu %d: %s", etap, path)
     return None
@@ -80,7 +77,7 @@ def _get_etap_mp4(etap: int):
     path = os.path.join(MEDIA_DIR, "mp4", "niebo", f"{etap}.mp4")
     b64  = _file_to_base64(path)
     if b64:
-        current_app.logger.info("MP4 etapu %d OK (%s)", etap, path)
+        current_app.logger.info("MP4 etapu %d OK", etap)
         return {"base64": b64, "content_type": "video/mp4", "filename": f"niebo_{etap}.mp4"}
     return None
 
@@ -97,7 +94,7 @@ def _get_hf_tokens() -> list:
     return [(n, v) for n in names if (v := os.getenv(n, "").strip())]
 
 
-# ── Generuj obrazek FLUX ──────────────────────────────────────────────────────
+# ── Generuj obrazek FLUX — zwraca (dict|None, prompt_użyty) ──────────────────
 def _generate_flux_image(prompt: str):
     tokens = _get_hf_tokens()
     if not tokens:
@@ -111,7 +108,7 @@ def _generate_flux_image(prompt: str):
             "guidance_scale":      HF_GUIDANCE,
         },
     }
-    current_app.logger.info("[wyslannik] FLUX prompt: %.200s", prompt)
+    current_app.logger.info("[wyslannik] FLUX prompt PEŁNY: %s", prompt)
 
     for name, token in tokens:
         headers = {"Authorization": f"Bearer {token}", "Accept": "image/png"}
@@ -131,7 +128,10 @@ def _generate_flux_image(prompt: str):
             elif resp.status_code in (503, 529):
                 current_app.logger.warning("[wyslannik] token %s przeciążony", name)
             else:
-                current_app.logger.warning("[wyslannik] token %s błąd %s", name, resp.status_code)
+                current_app.logger.warning(
+                    "[wyslannik] token %s błąd %s: %s",
+                    name, resp.status_code, resp.text[:100]
+                )
         except requests.exceptions.Timeout:
             current_app.logger.warning("[wyslannik] token %s timeout", name)
         except Exception as e:
@@ -143,18 +143,48 @@ def _generate_flux_image(prompt: str):
 
 # ── Wyciągnij rzeczowniki z wiadomości ───────────────────────────────────────
 def _extract_nouns(body: str) -> list:
+    """
+    Prosi DeepSeek o wypisanie WSZYSTKICH rzeczowników z wiadomości —
+    nie tylko materialnych, żeby nie gubić słów jak 'koza', 'koń' itp.
+    """
     system = (
-        "Wypisz maksymalnie 5 rzeczowników oznaczających materialne rzeczy "
-        "z podanej wiadomości. Odpowiedz TYLKO słowami oddzielonymi przecinkami, "
-        "po polsku, bez żadnych innych słów. "
-        "Jeśli nie ma żadnych rzeczowników materialnych, odpowiedz: BRAK"
+        "Wypisz wszystkie rzeczowniki z podanej wiadomości. "
+        "Odpowiedz TYLKO rzeczownikami oddzielonymi przecinkami, po polsku. "
+        "Nie dodawaj żadnych innych słów ani wyjaśnień. "
+        "Jeśli nie ma żadnych rzeczowników, odpowiedz: BRAK"
     )
     wynik = call_deepseek(system, body[:500], MODEL_TYLER)
+    current_app.logger.info("[wyslannik] DeepSeek rzeczowniki raw: %s", wynik)
+
     if not wynik or "BRAK" in wynik.upper():
         return []
-    nouns = [n.strip() for n in wynik.split(",") if n.strip()]
-    current_app.logger.info("[wyslannik] Rzeczowniki: %s", nouns)
-    return nouns[:5]
+
+    # Wyczyść odpowiedź — usuń ewentualne zdania, zostaw tylko słowa
+    nouns = [n.strip().lower() for n in wynik.split(",") if n.strip()]
+    # Odfiltruj zbyt długie frazy (DeepSeek czasem dodaje zdania)
+    nouns = [n for n in nouns if len(n.split()) <= 3]
+    current_app.logger.info("[wyslannik] Rzeczowniki po filtracji: %s", nouns)
+    return nouns[:7]
+
+
+# ── Przetłumacz rzeczowniki na angielski ─────────────────────────────────────
+def _translate_nouns(nouns: list) -> str:
+    if not nouns:
+        return ""
+    system = (
+        "Translate these Polish words to English. "
+        "Return ONLY the English words separated by commas, nothing else:"
+    )
+    translated = call_deepseek(system, ", ".join(nouns), MODEL_TYLER)
+    current_app.logger.info("[wyslannik] Tłumaczenie raw: %s", translated)
+
+    if not translated:
+        return ", ".join(nouns)
+
+    # Wyczyść — tylko słowa i przecinki
+    translated = re.sub(r'[^a-zA-Z,\s]', '', translated).strip().lower()
+    current_app.logger.info("[wyslannik] Tłumaczenie czyste: %s", translated)
+    return translated
 
 
 # ── Zbuduj prompt FLUX dla wysłannika ────────────────────────────────────────
@@ -162,19 +192,46 @@ def _build_wyslannik_flux_prompt(nouns: list) -> str:
     if not nouns:
         return f"paradise heaven scene, golden light, clouds, angels, {WYSLANNIK_IMAGE_STYLE}"
 
-    system     = "Translate these Polish nouns to English, comma-separated, no other words:"
-    translated = call_deepseek(system, ", ".join(nouns), MODEL_TYLER)
+    translated = _translate_nouns(nouns)
     if not translated:
         translated = ", ".join(nouns)
-    translated = translated.strip().lower()
-    current_app.logger.info("[wyslannik] Przetłumaczone: %s", translated)
 
-    return (
+    prompt = (
         f"heavenly paradise scene with flying colorful {translated}, "
         f"magical floating {translated} in paradise clouds, "
-        f"golden divine light, joyful atmosphere, "
+        f"golden divine light, joyful cheerful atmosphere, "
         f"{WYSLANNIK_IMAGE_STYLE}"
     )
+    current_app.logger.info("[wyslannik] FLUX prompt zbudowany: %s", prompt)
+    return prompt
+
+
+# ── Zbuduj załącznik _.txt z debugiem promptu ────────────────────────────────
+def _build_debug_txt(nouns: list, translated: str, flux_prompt: str, etap: int) -> dict:
+    """
+    Buduje plik _.txt z pełnymi danymi wysłanymi do FLUX.
+    Załączany do każdej odpowiedzi wysłannika.
+    """
+    content = (
+        f"=== REQUIEM RESPONDER — DEBUG FLUX ===\n"
+        f"Etap: {etap}\n\n"
+        f"--- Rzeczowniki wyciągnięte z wiadomości ---\n"
+        f"{', '.join(nouns) if nouns else '(brak)'}\n\n"
+        f"--- Tłumaczenie na angielski ---\n"
+        f"{translated if translated else '(brak)'}\n\n"
+        f"--- Pełny prompt wysłany do FLUX ---\n"
+        f"{flux_prompt}\n\n"
+        f"--- Parametry FLUX ---\n"
+        f"Model: FLUX.1-schnell\n"
+        f"num_inference_steps: {HF_STEPS}\n"
+        f"guidance_scale: {HF_GUIDANCE}\n"
+        f"API URL: {HF_API_URL}\n"
+    )
+    return {
+        "base64":       base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "content_type": "text/plain",
+        "filename":     "_.txt",
+    }
 
 
 # ── Formatuj historię dla DeepSeeka ──────────────────────────────────────────
@@ -203,6 +260,7 @@ def build_smierc_section(
         "nowy_etap":  int,
         "image":      { base64, content_type, filename } | None,
         "mp4":        { base64, content_type, filename } | None,
+        "debug_txt":  { base64, content_type, filename } | None,
       }
     """
     etapy    = _load_etapy()
@@ -229,14 +287,24 @@ def build_smierc_section(
                  "<br><i>— Wysłannik z wyższych sfer</i></p>"
         )
 
+        # Wyciągnij rzeczowniki → przetłumacz → zbuduj prompt → generuj
         nouns       = _extract_nouns(body)
+        translated  = _translate_nouns(nouns) if nouns else ""
         flux_prompt = _build_wyslannik_flux_prompt(nouns)
         image       = _generate_flux_image(flux_prompt)
+        debug_txt   = _build_debug_txt(nouns, translated, flux_prompt, etap)
 
         current_app.logger.info(
-            "[wyslannik] etap=%d rzeczowniki=%s image=%s", etap, nouns, bool(image)
+            "[wyslannik] etap=%d | rzeczowniki=%s | image=%s",
+            etap, nouns, bool(image)
         )
-        return {"reply_html": reply_html, "nowy_etap": etap, "image": image, "mp4": None}
+        return {
+            "reply_html": reply_html,
+            "nowy_etap":  etap,
+            "image":      image,
+            "mp4":        None,
+            "debug_txt":  debug_txt,
+        }
 
     # ── ETAP 1-6 ──────────────────────────────────────────────────────────────
     if etap < max_etap:
@@ -262,6 +330,7 @@ def build_smierc_section(
             "nowy_etap":  etap + 1,
             "image":      _get_etap_image(etap),
             "mp4":        _get_etap_mp4(etap),
+            "debug_txt":  None,
         }
 
     # ── ETAP 7 — reinkarnacja ─────────────────────────────────────────────────
@@ -287,4 +356,5 @@ def build_smierc_section(
         "nowy_etap":  etap + 1,
         "image":      _get_etap_image(max_etap),
         "mp4":        _get_etap_mp4(max_etap),
+        "debug_txt":  None,
     }
