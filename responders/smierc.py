@@ -313,7 +313,7 @@ def build_smierc_section(
         system = (
             "Jesteś Pawłem — zmarłym mężczyzną piszącym z zaświatów. "
             "Piszesz po polsku. Ton: spokojny, lekko absurdalny, z humorem. "
-            "Odpowiedź maksymalnie 5 zdań. Zacznij od: 'To autoresponder.' "
+            "Odpowiedź maksymalnie 5 zdań. Na końcu podpisz się: '— Autoresponder Pawła-zza-światów' "
             f"Umarłem na suchoty dnia {data_smierci_str}. "
             "Nawiąż do wiadomości osoby. "
             "Opisz swój aktualny etap rozwijając podany punkt. "
