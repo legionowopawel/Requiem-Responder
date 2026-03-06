@@ -141,39 +141,45 @@ def _generate_flux_image(prompt: str):
     return None
 
 
-# ── Wyciągnij rzeczowniki z wiadomości ───────────────────────────────────────
+
+
+
+# ── Wyciągnij frazy rzeczownikowe z wiadomości ───────────────────────────────
 def _extract_nouns(body: str) -> list:
     """
-    Prosi DeepSeek o wypisanie WSZYSTKICH rzeczowników z wiadomości —
-    nie tylko materialnych, żeby nie gubić słów jak 'koza', 'koń' itp.
+    Wyciąga frazy rzeczownikowe Z przymiotnikami —
+    żeby złapać 'obsrane psy', 'piękny kotek', 'stara koza' itp.
     """
     system = (
-        "Wypisz wszystkie rzeczowniki z podanej wiadomości. "
-        "Odpowiedz TYLKO rzeczownikami oddzielonymi przecinkami, po polsku. "
+        "Wypisz wszystkie frazy rzeczownikowe z podanej wiadomości "
+        "(rzeczownik razem z jego przymiotnikami). "
+        "Odpowiedz TYLKO frazami oddzielonymi przecinkami, po polsku. "
+        "Przykład: dla zdania 'mam obsrane psy i pięknego kotka' odpowiedz: "
+        "'obsrane psy, piękny kotek'. "
         "Nie dodawaj żadnych innych słów ani wyjaśnień. "
         "Jeśli nie ma żadnych rzeczowników, odpowiedz: BRAK"
     )
     wynik = call_deepseek(system, body[:500], MODEL_TYLER)
-    current_app.logger.info("[wyslannik] DeepSeek rzeczowniki raw: %s", wynik)
+    current_app.logger.info("[wyslannik] DeepSeek frazy raw: %s", wynik)
 
     if not wynik or "BRAK" in wynik.upper():
         return []
 
-    # Wyczyść odpowiedź — usuń ewentualne zdania, zostaw tylko słowa
-    nouns = [n.strip().lower() for n in wynik.split(",") if n.strip()]
-    # Odfiltruj zbyt długie frazy (DeepSeek czasem dodaje zdania)
-    nouns = [n for n in nouns if len(n.split()) <= 3]
-    current_app.logger.info("[wyslannik] Rzeczowniki po filtracji: %s", nouns)
-    return nouns[:7]
+    frazy = [n.strip().lower() for n in wynik.split(",") if n.strip()]
+    frazy = [n for n in frazy if len(n.split()) <= 4]
+    current_app.logger.info("[wyslannik] Frazy po filtracji: %s", frazy)
+    return frazy[:7]
 
 
-# ── Przetłumacz rzeczowniki na angielski ─────────────────────────────────────
+# ── Przetłumacz frazy na angielski ───────────────────────────────────────────
 def _translate_nouns(nouns: list) -> str:
     if not nouns:
         return ""
     system = (
-        "Translate these Polish words to English. "
-        "Return ONLY the English words separated by commas, nothing else:"
+        "Translate these Polish noun phrases to English. "
+        "Keep adjectives with their nouns. "
+        "Return ONLY the translated phrases separated by commas, nothing else. "
+        "Example: 'obsrane psy, piękny kotek' -> 'shit-covered dogs, beautiful kitten'"
     )
     translated = call_deepseek(system, ", ".join(nouns), MODEL_TYLER)
     current_app.logger.info("[wyslannik] Tłumaczenie raw: %s", translated)
@@ -181,8 +187,8 @@ def _translate_nouns(nouns: list) -> str:
     if not translated:
         return ", ".join(nouns)
 
-    # Wyczyść — tylko słowa i przecinki
-    translated = re.sub(r'[^a-zA-Z,\s]', '', translated).strip().lower()
+    # Wyczyść — tylko litery, myślniki, przecinki, spacje
+    translated = re.sub(r'[^a-zA-Z,\s\-]', '', translated).strip().lower()
     current_app.logger.info("[wyslannik] Tłumaczenie czyste: %s", translated)
     return translated
 
@@ -193,12 +199,13 @@ def _build_wyslannik_flux_prompt(translated: str) -> str:
         return f"paradise heaven scene, golden light, clouds, angels, {WYSLANNIK_IMAGE_STYLE}"
 
     prompt = (
-        f"thousands of magnificent heavenly {translated} filling the sky, "
-        f"epic divine {translated} made of gold and light, "
-        f"paradise version of {translated} — glowing, perfect, majestic, "
-        f"surreal abundance of {translated} in heaven, "
-        f"golden divine light, joyful awe-inspiring atmosphere, "
-        f"ultra-detailed digital art, vibrant colors, magical paradise"
+        f"thousands of {translated} filling paradise sky, "
+        f"absurd surreal abundance of {translated} everywhere in heaven, "
+        f"mutant hybrid versions of {translated} floating on clouds, "
+        f"epic divine {translated} in every possible variety and size, "
+        f"chaotic glorious paradise overflowing with {translated}, "
+        f"golden divine light, ultra-detailed digital art, vibrant colors, "
+        f"Monty Python surreal humor meets divine paradise"
     )
     current_app.logger.info("[wyslannik] FLUX prompt zbudowany: %s", prompt)
     return prompt
@@ -273,17 +280,20 @@ def build_smierc_section(
         translated = _translate_nouns(nouns) if nouns else ""
         nouns_pl   = ", ".join(nouns) if nouns else ""
         nouns_hint = (
-            f"W wiadomości tej osoby pojawiły się rzeczy: {nouns_pl}. "
-            f"Koniecznie wspomnij te rzeczy z zachwytem — w niebie jest ich tysiące, "
-            f"są doskonałe, złote i nieporównanie lepsze niż na Ziemi. Licytuj się! "
+            f"W wiadomości tej osoby pojawiły się rzeczy lub sytuacje: {nouns_pl}. "
+            f"ZASADA LICYTACJI (styl Monty Pythona — Four Yorkshiremen): "
+            f"Weź każdą rzecz lub cechę którą wspomniała osoba i przelicytuj ją absurdalnie w TĘ SAMĄ stronę — "
+            f"nie poprawiaj, nie ulepszaj moralnie, tylko MNÓŻ i WZMACNIAJ. "
+            f"Obsrane psy? U nas jest sto tysięcy psów i każdy obsrany inaczej, mamy całe galerie obsrania. "
+            f"Piękny kotek? U nas miliony kotków, w tym szczekające, dające mleko przez uszy, trójgłowe. "
+            f"Śmierdzi? U nas cuchnie na całą galaktykę i wszyscy są z tego dumni. "
+            f"Zawsze licytuj ilość (tysiące, miliony) ORAZ absurdalne wariacje i mutacje tego co wspomniała osoba. "
         ) if nouns_pl else ""
 
         system = (
             "Jesteś wysłannikiem z wyższych sfer duchowych. "
-            "Odpowiadasz z głęboką mądrością kosmiczną. "
+            "Piszesz po polsku, z dostojeństwem ale też z absurdalnym humorem. "
             "Nigdy nie ujawniasz źródła swojej wiedzy. "
-            "Piszesz po polsku, spokojnie, z dostojeństwem i ciepłem. "
-            "Reklamujesz niebo jako miejsce niesamowitej radości i wolności. "
             f"{nouns_hint}"
             "Odpowiedź maksymalnie 4 zdania."
         )
