@@ -188,19 +188,17 @@ def _translate_nouns(nouns: list) -> str:
 
 
 # ── Zbuduj prompt FLUX dla wysłannika ────────────────────────────────────────
-def _build_wyslannik_flux_prompt(nouns: list) -> str:
-    if not nouns:
+def _build_wyslannik_flux_prompt(translated: str) -> str:
+    if not translated:
         return f"paradise heaven scene, golden light, clouds, angels, {WYSLANNIK_IMAGE_STYLE}"
 
-    translated = _translate_nouns(nouns)
-    if not translated:
-        translated = ", ".join(nouns)
-
     prompt = (
-        f"heavenly paradise scene with flying colorful {translated}, "
-        f"magical floating {translated} in paradise clouds, "
-        f"golden divine light, joyful cheerful atmosphere, "
-        f"{WYSLANNIK_IMAGE_STYLE}"
+        f"thousands of magnificent heavenly {translated} filling the sky, "
+        f"epic divine {translated} made of gold and light, "
+        f"paradise version of {translated} — glowing, perfect, majestic, "
+        f"surreal abundance of {translated} in heaven, "
+        f"golden divine light, joyful awe-inspiring atmosphere, "
+        f"ultra-detailed digital art, vibrant colors, magical paradise"
     )
     current_app.logger.info("[wyslannik] FLUX prompt zbudowany: %s", prompt)
     return prompt
@@ -269,12 +267,24 @@ def build_smierc_section(
     # ── WYSŁANNIK (etap 8+) ───────────────────────────────────────────────────
     if etap > max_etap:
         historia_txt = _format_historia(historia)
+
+        # Wyciągnij rzeczowniki i przetłumacz RAZ — użyte i w tekście i w obrazku
+        nouns      = _extract_nouns(body)
+        translated = _translate_nouns(nouns) if nouns else ""
+        nouns_pl   = ", ".join(nouns) if nouns else ""
+        nouns_hint = (
+            f"W wiadomości tej osoby pojawiły się rzeczy: {nouns_pl}. "
+            f"Koniecznie wspomnij te rzeczy z zachwytem — w niebie jest ich tysiące, "
+            f"są doskonałe, złote i nieporównanie lepsze niż na Ziemi. Licytuj się! "
+        ) if nouns_pl else ""
+
         system = (
             "Jesteś wysłannikiem z wyższych sfer duchowych. "
             "Odpowiadasz z głęboką mądrością kosmiczną. "
             "Nigdy nie ujawniasz źródła swojej wiedzy. "
             "Piszesz po polsku, spokojnie, z dostojeństwem i ciepłem. "
             "Reklamujesz niebo jako miejsce niesamowitej radości i wolności. "
+            f"{nouns_hint}"
             "Odpowiedź maksymalnie 4 zdania."
         )
         user_msg    = f"Osoba pyta: {body}\n\nHistoria:\n{historia_txt}"
@@ -287,10 +297,7 @@ def build_smierc_section(
                  "<br><i>— Wysłannik z wyższych sfer</i></p>"
         )
 
-        # Wyciągnij rzeczowniki → przetłumacz → zbuduj prompt → generuj
-        nouns       = _extract_nouns(body)
-        translated  = _translate_nouns(nouns) if nouns else ""
-        flux_prompt = _build_wyslannik_flux_prompt(nouns)
+        flux_prompt = _build_wyslannik_flux_prompt(translated)
         image       = _generate_flux_image(flux_prompt)
         debug_txt   = _build_debug_txt(nouns, translated, flux_prompt, etap)
 
@@ -313,8 +320,8 @@ def build_smierc_section(
         system = (
             "Jesteś Pawłem — zmarłym mężczyzną piszącym z zaświatów. "
             "Piszesz po polsku. Ton: spokojny, lekko absurdalny, z humorem. "
-            "Odpowiedź maksymalnie 5 zdań. Na końcu podpisz się: '— Autoresponder Pawła-zza-światów' "
-            f"Koniecznie wspomnij że umarłeś na suchoty dnia {data_smierci_str}. "
+            "Odpowiedź maksymalnie 7 zdań. Na końcu podpisz się: '— Autoresponder Pawła-zza-światów' "
+            f"Koniecznie wspomnij że umarłeś na suchoty (tylko  w pierwszej wiadomości) dnia {data_smierci_str}. "
             "Nawiąż do wiadomości tej osoby paradoksalnie chwaląc, to że na Ziemi jest lepiej niż w niebie pomimo, że ta osoba będzie narzekać  "
             "Opisz swój aktualny etap rozwijając podany punkt. "
             "Nie wspominaj Księgi Urantii."
